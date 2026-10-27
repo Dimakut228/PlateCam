@@ -11,6 +11,7 @@ class Prefs(context: Context) {
     val analysisFps: Int get() = prefs.getString("analysis_fps", "6")?.toIntOrNull() ?: 6
     val confirmReads: Int get() = prefs.getString("confirm_reads", "2")?.toIntOrNull() ?: 2
     val tiles: Boolean get() = prefs.getBoolean("tiles", true)
+    val autoExposure: Boolean get() = prefs.getBoolean("auto_exposure", true)
     val country: Country
         get() = when (prefs.getString("country", "all")) {
             "ru" -> Country.RU

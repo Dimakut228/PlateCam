@@ -4,15 +4,23 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Rect
+import android.hardware.camera2.CameraMetadata
+import android.hardware.camera2.CaptureRequest
 import android.os.Bundle
 import android.util.Size
 import android.view.MotionEvent
+import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.CaptureRequestOptions
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.CameraControl
+import androidx.camera.core.CameraInfo
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
@@ -31,6 +39,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var previewView: PreviewView
     private lateinit var overlay: OverlayView
+    private lateinit var focusRing: FocusRingView
     private lateinit var statusText: TextView
     private lateinit var plateText: TextView
     private lateinit var plateInfo: TextView
@@ -52,6 +61,10 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var destroyed = false
 
     private var cameraControl: CameraControl? = null
+    private var cameraInfo: CameraInfo? = null
+    private var appliedEv = 0f
+    private var lastExposureAt = 0L
+    private var stableExposureFrames = 0
 
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
@@ -69,6 +82,7 @@ class MainActivity : AppCompatActivity() {
 
         previewView = findViewById(R.id.preview)
         overlay = findViewById(R.id.overlay)
+        focusRing = findViewById(R.id.focus_ring)
         statusText = findViewById(R.id.status)
         plateText = findViewById(R.id.plate_number)
         plateInfo = findViewById(R.id.plate_info)
@@ -77,6 +91,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.settings_button).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
+        setupFocus()
 
         if (!modelReady.get()) loadModels()
         requestCamera()
@@ -92,6 +107,9 @@ class MainActivity : AppCompatActivity() {
         lastTilesAt = 0L
         lastDisplay = null
         lastDisplayAt = 0L
+        appliedEv = 0f
+        lastExposureAt = 0L
+        stableExposureFrames = 0
     }
 
     override fun onDestroy() {
@@ -164,7 +182,8 @@ class MainActivity : AppCompatActivity() {
                     analysis
                 )
                 cameraControl = camera.cameraControl
-                setupFocus()
+                cameraInfo = camera.cameraInfo
+                setupCameraModes(camera.cameraControl)
             } catch (t: Throwable) {
                 runOnUiThread { statusText.text = t.message ?: t.javaClass.simpleName }
             }
@@ -172,21 +191,54 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupFocus() {
-        previewView.setOnTouchListener { _, event ->
-            if (event.action == MotionEvent.ACTION_DOWN) {
-                try {
-                    val factory = previewView.meteringPointFactory
-                    val point = factory.createPoint(event.x, event.y)
-                    val action = FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF)
-                        .setAutoCancelDuration(3, TimeUnit.SECONDS)
-                        .build()
-                    cameraControl?.startFocusAndMetering(action)
-                } catch (t: Throwable) {
+        val root = findViewById<View>(R.id.root)
+        val panel = findViewById<View>(R.id.panel)
+        root.setOnTouchListener { _, event ->
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                val panelBounds = Rect()
+                panel.getHitRect(panelBounds)
+                if (panelBounds.contains(event.x.toInt(), event.y.toInt())) {
+                    return@setOnTouchListener false
                 }
+                focusRing.show(event.x, event.y)
+                focusAt(event.x, event.y)
                 true
             } else {
                 false
             }
+        }
+    }
+
+    private fun focusAt(x: Float, y: Float) {
+        try {
+            val point = previewView.meteringPointFactory.createPoint(x, y)
+            val action = FocusMeteringAction.Builder(
+                point,
+                FocusMeteringAction.FLAG_AF or
+                    FocusMeteringAction.FLAG_AE or
+                    FocusMeteringAction.FLAG_AWB
+            ).setAutoCancelDuration(4, TimeUnit.SECONDS).build()
+            cameraControl?.startFocusAndMetering(action)
+        } catch (t: Throwable) {
+        }
+    }
+
+    @OptIn(ExperimentalCamera2Interop::class)
+    private fun setupCameraModes(control: CameraControl) {
+        try {
+            val camera2 = Camera2CameraControl.from(control)
+            val options = CaptureRequestOptions.Builder()
+                .setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AWB_MODE,
+                    CameraMetadata.CONTROL_AWB_MODE_AUTO
+                )
+                .setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AE_MODE,
+                    CameraMetadata.CONTROL_AE_MODE_ON
+                )
+                .build()
+            camera2.setCaptureRequestOptions(options)
+        } catch (t: Throwable) {
         }
     }
 
@@ -219,6 +271,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun processFrame(bitmap: Bitmap) {
+        maybeTuneExposure(bitmap)
         val activeDetector = detector ?: return
         val activeOcr = ocr ?: return
         val now = System.currentTimeMillis()
@@ -284,6 +337,97 @@ class MainActivity : AppCompatActivity() {
                 plateInfo.text = getString(R.string.search_hint)
             }
             statusText.text = "PlateCam · $fps к/с · $cost мс · $count"
+        }
+    }
+
+    private fun maybeTuneExposure(bitmap: Bitmap) {
+        if (!prefs.autoExposure) {
+            stableExposureFrames = 0
+            if (appliedEv != 0f) {
+                appliedEv = 0f
+                runOnUiThread { applyExposureCompensation(0f) }
+            }
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (now - lastExposureAt < 900L) return
+        lastExposureAt = now
+
+        val cols = 24
+        val rows = 16
+        val width = bitmap.width
+        val height = bitmap.height
+        if (width <= 0 || height <= 0) return
+        var sum = 0L
+        var clipped = 0
+        var count = 0
+        for (row in 0 until rows) {
+            val y = ((row + 0.5f) * height / rows).toInt().coerceIn(0, height - 1)
+            for (col in 0 until cols) {
+                val x = ((col + 0.5f) * width / cols).toInt().coerceIn(0, width - 1)
+                val pixel = bitmap.getPixel(x, y)
+                val r = (pixel shr 16) and 0xFF
+                val g = (pixel shr 8) and 0xFF
+                val b = pixel and 0xFF
+                val luma = (r * 77 + g * 150 + b * 29) shr 8
+                sum += luma
+                if (luma >= 248) clipped++
+                count++
+            }
+        }
+        if (count == 0) return
+        val average = sum.toFloat() / (count * 255f)
+        val clippedFraction = clipped.toFloat() / count
+
+        val overexposed = clippedFraction > 0.08f || average > 0.72f
+        val underexposed = clippedFraction < 0.015f && average < 0.20f
+        when {
+            overexposed -> {
+                stableExposureFrames = 0
+                val next = (appliedEv - 0.5f).coerceAtLeast(-2f)
+                if (next < appliedEv - 0.1f) {
+                    appliedEv = next
+                    runOnUiThread { applyExposureCompensation(next) }
+                }
+            }
+            underexposed -> {
+                stableExposureFrames = 0
+                val next = (appliedEv + 0.5f).coerceAtMost(1.0f)
+                if (next > appliedEv + 0.1f) {
+                    appliedEv = next
+                    runOnUiThread { applyExposureCompensation(next) }
+                }
+            }
+            else -> {
+                stableExposureFrames++
+                if (stableExposureFrames >= 4 && appliedEv != 0f) {
+                    stableExposureFrames = 0
+                    appliedEv = if (appliedEv > 0f) {
+                        (appliedEv - 0.5f).coerceAtLeast(0f)
+                    } else {
+                        (appliedEv + 0.5f).coerceAtMost(0f)
+                    }
+                    val relaxed = appliedEv
+                    runOnUiThread { applyExposureCompensation(relaxed) }
+                }
+            }
+        }
+    }
+
+    private fun applyExposureCompensation(ev: Float) {
+        val info = cameraInfo ?: return
+        val control = cameraControl ?: return
+        try {
+            val state = info.exposureState
+            if (!state.isExposureCompensationSupported) return
+            val step = state.exposureCompensationStep
+            if (step.denominator == 0) return
+            val stepValue = step.numerator.toFloat() / step.denominator
+            if (stepValue <= 0f) return
+            val range = state.exposureCompensationRange
+            val index = (ev / stepValue).roundToInt().coerceIn(range.lower, range.upper)
+            control.setExposureCompensationIndex(index)
+        } catch (t: Throwable) {
         }
     }
 }

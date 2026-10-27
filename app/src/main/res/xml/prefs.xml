@@ -39,6 +39,12 @@
         android:summary="Разбивает кадр на 4 части, когда номер не найден целиком"
         android:title="Искать мелкие номера" />
 
+    <SwitchPreferenceCompat
+        android:defaultValue="true"
+        android:key="auto_exposure"
+        android:summary="Автобаланс белого и компенсация пересвета на солнце"
+        android:title="Автоэкспозиция" />
+
     <Preference
         android:key="about"
         android:summary="Модели, лицензии и ограничения"
