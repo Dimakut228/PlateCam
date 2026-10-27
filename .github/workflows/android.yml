@@ -84,7 +84,7 @@ jobs:
           cp app/build/outputs/apk/release/app-release.apk PlateCam.apk
           tag=latest
           gh release view "$tag" >/dev/null 2>&1 || \
-            gh release create "$tag" --title "PlateCam" --notes-file notes.md --prerelease
+            gh release create "$tag" --title "PlateCam" --notes-file notes.md
           uploaded=0
           for attempt in 1 2 3 4 5; do
             if gh release upload "$tag" PlateCam.apk --clobber; then
