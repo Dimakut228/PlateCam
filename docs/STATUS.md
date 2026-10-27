@@ -22,8 +22,7 @@
 
 - Репозиторий публичный: https://github.com/Dimakut228/PlateCam
 - Сборка `Android` прошла успешно для `3756ee6` (run 40510271934).
-- APK опубликован в `latest`: 52 367 684 байта.
-- SHA-256: `c0d0baa77d04a5a64c01bdc43748615ec98241bbaa8116336c52686b84b7be35`.
+- APK опубликован в `latest`: около 52,4 МБ.
 - Прямая ссылка: https://github.com/Dimakut228/PlateCam/releases/latest/download/PlateCam.apk
 - Локальная копия: `/data/data/com.termux/files/home/PlateCam.apk`.
 
