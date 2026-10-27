@@ -2,6 +2,7 @@
 <resources>
     <string name="app_name">PlateCam</string>
     <string name="status_starting">Запуск камеры…</string>
+    <string name="loading_models">Загрузка моделей…</string>
     <string name="searching_plate">Поиск номера…</string>
     <string name="search_hint">Наведите камеру на номер</string>
     <string name="settings">Настройки</string>

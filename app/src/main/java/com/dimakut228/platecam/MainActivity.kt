@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Rect
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
@@ -59,6 +60,7 @@ class MainActivity : AppCompatActivity() {
     private var lastDisplayAt = 0L
     private var lastOcrAt = 0L
     private var lastOcrBox: Detection? = null
+    private var rotatedBitmap: Bitmap? = null
 
     private val modelReady = AtomicBoolean(false)
     @Volatile private var destroyed = false
@@ -118,6 +120,7 @@ class MainActivity : AppCompatActivity() {
         appliedEv = 0f
         lastExposureAt = 0L
         stableExposureFrames = 0
+        applyExposureCompensation(0f)
     }
 
     override fun onDestroy() {
@@ -126,15 +129,18 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         val oldDetector = detector
         val oldOcr = ocr
+        val oldRotation = rotatedBitmap
         detector = null
         ocr = null
+        rotatedBitmap = null
         if (::analysisExecutor.isInitialized) {
             analysisExecutor.shutdown()
             Thread {
                 try {
-                    if (analysisExecutor.awaitTermination(2, TimeUnit.SECONDS)) {
+                    if (analysisExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
                         oldDetector?.close()
                         oldOcr?.close()
+                        oldRotation?.recycle()
                     }
                 } catch (ignored: InterruptedException) {
                 }
@@ -142,16 +148,18 @@ class MainActivity : AppCompatActivity() {
         } else {
             oldDetector?.close()
             oldOcr?.close()
+            oldRotation?.recycle()
         }
     }
 
     private fun loadModels(profile: PerformanceProfile) {
+        runOnUiThread { statusText.text = getString(R.string.loading_models) }
         analysisExecutor.execute {
             var loadedDetector: PlateDetector? = null
             var loadedOcr: PlateOcr? = null
             try {
-                loadedDetector = PlateDetector(this, profile.threads)
-                loadedOcr = PlateOcr(this, profile.threads, profile.ocrWidth)
+                loadedDetector = PlateDetector(this, profile.threads, prefs.xnnpack)
+                loadedOcr = PlateOcr(this, profile.threads, profile.ocrWidth, prefs.xnnpack)
                 if (destroyed) {
                     loadedDetector.close()
                     loadedOcr.close()
@@ -276,12 +284,11 @@ class MainActivity : AppCompatActivity() {
         try {
             val bitmap = image.toBitmap()
             val rotation = image.imageInfo.rotationDegrees
-            val upright = BitmapUtils.rotate(bitmap, rotation)
-            if (upright !== bitmap) bitmap.recycle()
+            val upright = if (rotation % 360 == 0) bitmap else rotateForAnalysis(bitmap, rotation)
             try {
                 processFrame(upright)
             } finally {
-                upright.recycle()
+                bitmap.recycle()
             }
         } catch (t: Throwable) {
             val message = t.message ?: t.javaClass.simpleName
@@ -376,6 +383,40 @@ class MainActivity : AppCompatActivity() {
             }
             statusText.text = "PlateCam · $fps к/с · $cost мс · $count"
         }
+    }
+
+    private fun rotateForAnalysis(source: Bitmap, degrees: Int): Bitmap {
+        val normalized = ((degrees % 360) + 360) % 360
+        val targetWidth = if (normalized % 180 == 0) source.width else source.height
+        val targetHeight = if (normalized % 180 == 0) source.height else source.width
+        var target = rotatedBitmap
+        if (target == null || target.isRecycled ||
+            target.width != targetWidth || target.height != targetHeight
+        ) {
+            target?.recycle()
+            target = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+            target.density = source.density
+            rotatedBitmap = target
+        }
+        val canvas = Canvas(target)
+        canvas.save()
+        when (normalized) {
+            90 -> {
+                canvas.translate(targetWidth.toFloat(), 0f)
+                canvas.rotate(90f)
+            }
+            180 -> {
+                canvas.translate(targetWidth.toFloat(), targetHeight.toFloat())
+                canvas.rotate(180f)
+            }
+            270 -> {
+                canvas.translate(0f, targetHeight.toFloat())
+                canvas.rotate(270f)
+            }
+        }
+        canvas.drawBitmap(source, 0f, 0f, null)
+        canvas.restore()
+        return target
     }
 
     private fun samePlate(a: Detection, b: Detection): Boolean {

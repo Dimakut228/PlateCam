@@ -14,7 +14,7 @@ import java.nio.FloatBuffer
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-class PlateDetector(context: Context, threads: Int) {
+class PlateDetector(context: Context, threads: Int, useXnnpack: Boolean) {
 
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
     private val handle: ModelRuntime.SessionHandle
@@ -32,7 +32,7 @@ class PlateDetector(context: Context, threads: Int) {
 
     init {
         val modelFile = ModelAssets.prepare(context, "plate_yolov8n.onnx")
-        handle = ModelRuntime.createSession(env, modelFile.absolutePath, threads)
+        handle = ModelRuntime.createSession(env, modelFile.absolutePath, threads, useXnnpack)
         session = handle.session
         inputName = session.inputInfo.keys.first()
         val info = session.inputInfo[inputName]?.info as? TensorInfo

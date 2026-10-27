@@ -11,7 +11,7 @@ import ai.onnxruntime.OrtSession
 import ai.onnxruntime.TensorInfo
 import java.nio.FloatBuffer
 
-class PlateOcr(context: Context, threads: Int, requestedWidth: Int) {
+class PlateOcr(context: Context, threads: Int, requestedWidth: Int, useXnnpack: Boolean) {
 
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
     private val handle: ModelRuntime.SessionHandle
@@ -32,7 +32,7 @@ class PlateOcr(context: Context, threads: Int, requestedWidth: Int) {
 
     init {
         val modelFile = ModelAssets.prepare(context, "ocr_ppocrv5_mobile.onnx")
-        handle = ModelRuntime.createSession(env, modelFile.absolutePath, threads)
+        handle = ModelRuntime.createSession(env, modelFile.absolutePath, threads, useXnnpack)
         session = handle.session
         inputName = session.inputInfo.keys.first()
         val inInfo = session.inputInfo[inputName]?.info as? TensorInfo

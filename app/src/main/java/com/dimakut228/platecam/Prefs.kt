@@ -12,6 +12,7 @@ class Prefs(context: Context) {
     val confirmReads: Int get() = prefs.getString("confirm_reads", "2")?.toIntOrNull() ?: 2
     val tiles: Boolean get() = prefs.getBoolean("tiles", true)
     val autoExposure: Boolean get() = prefs.getBoolean("auto_exposure", true)
+    val xnnpack: Boolean get() = prefs.getBoolean("xnnpack", true)
     val country: Country
         get() = when (prefs.getString("country", "all")) {
             "ru" -> Country.RU

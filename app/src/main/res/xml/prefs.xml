@@ -45,6 +45,12 @@
         android:summary="Автобаланс белого и компенсация пересвета на солнце"
         android:title="Автоэкспозиция" />
 
+    <SwitchPreferenceCompat
+        android:defaultValue="true"
+        android:key="xnnpack"
+        android:summary="Ускорение CPU через XNNPACK; применяется после перезапуска"
+        android:title="XNNPACK" />
+
     <Preference
         android:key="about"
         android:summary="Модели, лицензии и ограничения"

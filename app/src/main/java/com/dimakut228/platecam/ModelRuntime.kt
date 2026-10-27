@@ -21,19 +21,22 @@ object ModelRuntime {
     fun createSession(
         environment: OrtEnvironment,
         modelPath: String,
-        threads: Int
+        threads: Int,
+        useXnnpack: Boolean
     ): SessionHandle {
-        val xnnpackOptions = baseOptions(threads)
-        try {
-            xnnpackOptions.addXnnpack(emptyMap())
-            return SessionHandle(
-                environment.createSession(modelPath, xnnpackOptions),
-                xnnpackOptions
-            )
-        } catch (t: Throwable) {
+        if (useXnnpack) {
+            val xnnpackOptions = baseOptions(threads)
             try {
-                xnnpackOptions.close()
-            } catch (ignored: Throwable) {
+                xnnpackOptions.addXnnpack(emptyMap<String, String>())
+                return SessionHandle(
+                    environment.createSession(modelPath, xnnpackOptions),
+                    xnnpackOptions
+                )
+            } catch (t: Throwable) {
+                try {
+                    xnnpackOptions.close()
+                } catch (ignored: Throwable) {
+                }
             }
         }
 
