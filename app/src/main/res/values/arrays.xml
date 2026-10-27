@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="country_titles">
+        <item>РФ и РБ</item>
+        <item>Только РФ</item>
+        <item>Только РБ</item>
+    </string-array>
+    <string-array name="country_values">
+        <item>all</item>
+        <item>ru</item>
+        <item>by</item>
+    </string-array>
+
+    <string-array name="threshold_titles">
+        <item>0,25 — больше номеров, больше ошибок</item>
+        <item>0,35 — сбалансированно</item>
+        <item>0,50 — только уверенные</item>
+        <item>0,65 — строго</item>
+    </string-array>
+    <string-array name="threshold_values">
+        <item>0.25</item>
+        <item>0.35</item>
+        <item>0.5</item>
+        <item>0.65</item>
+    </string-array>
+
+    <string-array name="fps_titles">
+        <item>4 к/с — экономно</item>
+        <item>6 к/с — обычный режим</item>
+        <item>8 к/с — быстро</item>
+    </string-array>
+    <string-array name="fps_values">
+        <item>4</item>
+        <item>6</item>
+        <item>8</item>
+    </string-array>
+
+    <string-array name="confirm_titles">
+        <item>1 чтение — сразу</item>
+        <item>2 чтения — сбалансированно</item>
+        <item>3 чтения — строже</item>
+    </string-array>
+    <string-array name="confirm_values">
+        <item>1</item>
+        <item>2</item>
+        <item>3</item>
+    </string-array>
+</resources>

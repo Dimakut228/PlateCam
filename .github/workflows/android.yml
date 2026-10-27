@@ -1,0 +1,101 @@
+name: Android
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.7"
+
+      - name: Restore signing key
+        if: github.event_name != 'pull_request'
+        env:
+          KEYSTORE_B64: ${{ secrets.PLATECAM_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::Secret PLATECAM_KEYSTORE_B64 is not set"
+            exit 1
+          fi
+          mkdir -p signing
+          printf '%s' "$KEYSTORE_B64" | base64 -d > signing/platecam.jks
+
+      - name: Test
+        run: gradle :app:testDebugUnitTest --stacktrace
+
+      - name: Build release APK
+        if: github.event_name != 'pull_request'
+        env:
+          PLATECAM_STORE_PASSWORD: ${{ secrets.PLATECAM_STORE_PASSWORD }}
+          PLATECAM_KEY_ALIAS: ${{ secrets.PLATECAM_KEY_ALIAS }}
+          PLATECAM_KEY_PASSWORD: ${{ secrets.PLATECAM_KEY_PASSWORD }}
+        run: |
+          gradle :app:assembleRelease \
+            -PversionCode=${{ github.run_number }} \
+            -PversionName=1.0.${{ github.run_number }} \
+            --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          name: PlateCam-build-${{ github.run_number }}
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+
+      - name: Compose release notes
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "PlateCam build ${{ github.run_number }}"
+            echo ""
+            echo "- Коммит: ${{ github.sha }}"
+            echo "- Дата: $(date -u +'%Y-%m-%d %H:%M UTC')"
+            echo "- Тесты: Unit-тесты парсера, трекера, YOLO-декодера и CTC."
+          } > notes.md
+          cat notes.md
+
+      - name: Publish APK to release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk PlateCam.apk
+          tag=latest
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --title "PlateCam" --notes-file notes.md --prerelease
+          uploaded=0
+          for attempt in 1 2 3 4 5; do
+            if gh release upload "$tag" PlateCam.apk --clobber; then
+              uploaded=1
+              break
+            fi
+            echo "Попытка загрузки $attempt не удалась, повтор через 20 с"
+            sleep 20
+          done
+          if [ "$uploaded" != "1" ]; then
+            echo "::error::Не удалось загрузить APK в релиз $tag"
+            exit 1
+          fi
+          gh release edit "$tag" --title "PlateCam (build ${{ github.run_number }})" --notes-file notes.md

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.PlateCam" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:navigationBarColor">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/black</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <style name="Theme.PlateCam.Settings" parent="Theme.AppCompat.Light.DarkActionBar">
+        <item name="colorPrimary">#0A7C5A</item>
+        <item name="colorPrimaryDark">#07543E</item>
+        <item name="colorAccent">#00A86B</item>
+    </style>
+</resources>

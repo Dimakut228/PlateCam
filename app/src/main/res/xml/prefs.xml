@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <ListPreference
+        android:defaultValue="all"
+        android:entries="@array/country_titles"
+        android:entryValues="@array/country_values"
+        android:key="country"
+        android:summary="%s"
+        android:title="Страна номеров" />
+
+    <ListPreference
+        android:defaultValue="0.35"
+        android:entries="@array/threshold_titles"
+        android:entryValues="@array/threshold_values"
+        android:key="threshold"
+        android:summary="%s"
+        android:title="Порог детектора" />
+
+    <ListPreference
+        android:defaultValue="6"
+        android:entries="@array/fps_titles"
+        android:entryValues="@array/fps_values"
+        android:key="analysis_fps"
+        android:summary="%s"
+        android:title="Частота анализа" />
+
+    <ListPreference
+        android:defaultValue="2"
+        android:entries="@array/confirm_titles"
+        android:entryValues="@array/confirm_values"
+        android:key="confirm_reads"
+        android:summary="%s"
+        android:title="Подтверждение номера" />
+
+    <SwitchPreferenceCompat
+        android:defaultValue="true"
+        android:key="tiles"
+        android:summary="Разбивает кадр на 4 части, когда номер не найден целиком"
+        android:title="Искать мелкие номера" />
+
+    <Preference
+        android:key="about"
+        android:summary="Модели, лицензии и ограничения"
+        android:title="О программе" />
+</PreferenceScreen>
