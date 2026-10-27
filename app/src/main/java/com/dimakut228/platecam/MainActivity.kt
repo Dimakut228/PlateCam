@@ -48,16 +48,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var analysisExecutor: ExecutorService
     @Volatile private var detector: PlateDetector? = null
     @Volatile private var ocr: PlateOcr? = null
-    private lateinit var prefs: Prefs
-    private var tracker = PlateTracker()
-    private var adaptive = AdaptiveRate()
-    private lateinit var tuning: PerformanceProfile
+    @Volatile private lateinit var prefs: Prefs
+    @Volatile private var tracker = PlateTracker()
+    @Volatile private var adaptive = AdaptiveRate()
+    @Volatile private lateinit var tuning: PerformanceProfile
 
-    private var lastAnalysisAt = 0L
-    private var lastFrameCostMs = 0L
-    private var lastTilesAt = 0L
-    private var lastDisplay: PlateRead? = null
-    private var lastDisplayAt = 0L
+    @Volatile private var lastAnalysisAt = 0L
+    @Volatile private var lastFrameCostMs = 0L
+    @Volatile private var lastTilesAt = 0L
+    @Volatile private var lastDisplay: PlateRead? = null
+    @Volatile private var lastDisplayAt = 0L
     @Volatile private var lastOcrAt = 0L
     @Volatile private var lastOcrBox: Detection? = null
     @Volatile private var rotatedBitmap: Bitmap? = null
