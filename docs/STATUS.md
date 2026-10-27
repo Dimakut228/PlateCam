@@ -23,8 +23,8 @@
 ## CI
 
 - Репозиторий публичный: https://github.com/Dimakut228/PlateCam
-- Сборка `Android` прошла успешно для `3756ee6` (run 40510271934).
-- APK опубликован в `latest`: около 52,4 МБ.
+- Сборка `Android` прошла успешно для `f27ef96` (run 40533815944).
+- APK опубликован в `latest`: около 52,3 МБ.
 - Прямая ссылка: https://github.com/Dimakut228/PlateCam/releases/latest/download/PlateCam.apk
 - Локальная копия: `/data/data/com.termux/files/home/PlateCam.apk`.
 
