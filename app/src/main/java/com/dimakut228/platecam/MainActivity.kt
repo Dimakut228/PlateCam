@@ -46,8 +46,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var plateInfo: TextView
 
     private lateinit var analysisExecutor: ExecutorService
-    private var detector: PlateDetector? = null
-    private var ocr: PlateOcr? = null
+    @Volatile private var detector: PlateDetector? = null
+    @Volatile private var ocr: PlateOcr? = null
     private lateinit var prefs: Prefs
     private var tracker = PlateTracker()
     private var adaptive = AdaptiveRate()
@@ -58,18 +58,18 @@ class MainActivity : AppCompatActivity() {
     private var lastTilesAt = 0L
     private var lastDisplay: PlateRead? = null
     private var lastDisplayAt = 0L
-    private var lastOcrAt = 0L
-    private var lastOcrBox: Detection? = null
-    private var rotatedBitmap: Bitmap? = null
+    @Volatile private var lastOcrAt = 0L
+    @Volatile private var lastOcrBox: Detection? = null
+    @Volatile private var rotatedBitmap: Bitmap? = null
 
     private val modelReady = AtomicBoolean(false)
     @Volatile private var destroyed = false
 
     private var cameraControl: CameraControl? = null
     private var cameraInfo: CameraInfo? = null
-    private var appliedEv = 0f
-    private var lastExposureAt = 0L
-    private var stableExposureFrames = 0
+    @Volatile private var appliedEv = 0f
+    @Volatile private var lastExposureAt = 0L
+    @Volatile private var stableExposureFrames = 0
 
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
@@ -110,7 +110,8 @@ class MainActivity : AppCompatActivity() {
         tracker = PlateTracker(confirmReads = prefs.confirmReads)
         val targetFps = prefs.analysisFps.coerceAtMost(tuning.maxFps).coerceAtLeast(1)
         val minFps = tuning.minFps.coerceAtMost(targetFps)
-        adaptive = AdaptiveRate(minFps = minFps, maxFps = targetFps, startFps = targetFps)
+        val startFps = if (tuning.tier == PerformanceTier.LOW) minOf(2, targetFps) else targetFps
+        adaptive = AdaptiveRate(minFps = minFps, maxFps = targetFps, startFps = startFps)
         lastAnalysisAt = 0L
         lastTilesAt = 0L
         lastDisplay = null
@@ -308,7 +309,8 @@ class MainActivity : AppCompatActivity() {
         val threshold = prefs.threshold
         var results = activeDetector.detect(bitmap, threshold)
         if (results.isEmpty() && prefs.tiles && tuning.allowTiles &&
-            lastFrameCostMs in 1..tuning.tileMaxCostMs && now - lastTilesAt > 1800L
+            lastFrameCostMs > 0L && lastFrameCostMs <= tuning.tileMaxCostMs &&
+            now - lastTilesAt > 1800L
         ) {
             lastTilesAt = now
             results = activeDetector.detectTiled(bitmap, threshold, 4)
@@ -318,8 +320,9 @@ class MainActivity : AppCompatActivity() {
         var read: PlateRead? = null
         val tracked: PlateTracker.Tracked?
         if (best != null) {
-            val shouldOcr = lastOcrBox == null ||
-                !samePlate(lastOcrBox!!, best) ||
+            val previousBox = lastOcrBox
+            val shouldOcr = previousBox == null ||
+                !samePlate(previousBox, best) ||
                 now - lastOcrAt >= tuning.ocrIntervalMs
             if (shouldOcr) {
                 lastOcrAt = now
@@ -394,11 +397,14 @@ class MainActivity : AppCompatActivity() {
             target.width != targetWidth || target.height != targetHeight
         ) {
             target?.recycle()
-            target = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
-            target.density = source.density
-            rotatedBitmap = target
+            val fresh = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+            fresh.density = source.density
+            rotatedBitmap = fresh
+            target = fresh
         }
-        val canvas = Canvas(target)
+        val output = target ?: return source
+        output.density = source.density
+        val canvas = Canvas(output)
         canvas.save()
         when (normalized) {
             90 -> {
@@ -416,7 +422,7 @@ class MainActivity : AppCompatActivity() {
         }
         canvas.drawBitmap(source, 0f, 0f, null)
         canvas.restore()
-        return target
+        return output
     }
 
     private fun samePlate(a: Detection, b: Detection): Boolean {

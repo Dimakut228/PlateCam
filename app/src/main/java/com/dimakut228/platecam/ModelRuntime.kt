@@ -53,5 +53,7 @@ object ModelRuntime {
             setInterOpNumThreads(1)
             setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL)
             setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            addConfigEntry("session.intra_op.allow_spinning", "0")
+            addConfigEntry("session.inter_op.allow_spinning", "0")
         }
 }
