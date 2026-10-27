@@ -10,6 +10,16 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import ai.onnxruntime.TensorInfo
 import java.nio.FloatBuffer
+import kotlin.math.roundToInt
+
+internal object OcrSizing {
+    fun widthFor(sourceWidth: Int, sourceHeight: Int, maxWidth: Int, height: Int = 48): Int {
+        if (sourceWidth <= 0 || sourceHeight <= 0) return 160.coerceAtMost(maxWidth)
+        val ideal = (sourceWidth.toFloat() * height / sourceHeight).roundToInt()
+        val clamped = ideal.coerceIn(160, maxWidth)
+        return ((clamped + 7) / 8) * 8
+    }
+}
 
 class PlateOcr(context: Context, threads: Int, requestedWidth: Int, useXnnpack: Boolean) {
 
@@ -18,16 +28,17 @@ class PlateOcr(context: Context, threads: Int, requestedWidth: Int, useXnnpack: 
     private val session: OrtSession
     private val inputName: String
     private val inputHeight: Int
-    private val inputWidth: Int
+    private val maxWidth: Int
     private val keys: List<String>
     private val allowed: BooleanArray
 
-    private val scaledBitmap: Bitmap
-    private val canvas: Canvas
+    private var scaledBitmap: Bitmap? = null
+    private var canvas: Canvas? = null
     private val scalePaint = Paint(Paint.FILTER_BITMAP_FLAG)
-    private val destination: Rect
-    private val pixels: IntArray
-    private val data: FloatArray
+    private val destination = Rect()
+    private var pixels = IntArray(0)
+    private var data = FloatArray(0)
+    private var bufferWidth = 0
     private var outputData = FloatArray(0)
 
     init {
@@ -38,7 +49,7 @@ class PlateOcr(context: Context, threads: Int, requestedWidth: Int, useXnnpack: 
         val inInfo = session.inputInfo[inputName]?.info as? TensorInfo
         val inShape = inInfo?.shape
         inputHeight = inShape?.getOrNull(2)?.toInt()?.takeIf { it > 0 } ?: 48
-        inputWidth = ((requestedWidth.coerceIn(160, 640)) / 8) * 8
+        maxWidth = ((requestedWidth.coerceIn(160, 640)) / 8) * 8
 
         val outInfo = session.outputInfo.values.first().info as? TensorInfo
         val classCount = outInfo?.shape?.getOrNull(2)?.toInt()?.takeIf { it > 0 } ?: 438
@@ -54,18 +65,15 @@ class PlateOcr(context: Context, threads: Int, requestedWidth: Int, useXnnpack: 
             }
         }
 
-        scaledBitmap = Bitmap.createBitmap(inputWidth, inputHeight, Bitmap.Config.ARGB_8888)
-        canvas = Canvas(scaledBitmap)
-        destination = Rect(0, 0, inputWidth, inputHeight)
-        val plane = inputWidth * inputHeight
-        pixels = IntArray(plane)
-        data = FloatArray(plane * 3)
     }
 
     fun recognize(bitmap: Bitmap): CtcDecode.Result? {
-        canvas.drawBitmap(bitmap, null, destination, scalePaint)
-        scaledBitmap.getPixels(pixels, 0, inputWidth, 0, 0, inputWidth, inputHeight)
-        val plane = inputWidth * inputHeight
+        val width = OcrSizing.widthFor(bitmap.width, bitmap.height, maxWidth, inputHeight)
+        val target = ensureBuffer(width) ?: return null
+        val targetCanvas = canvas ?: return null
+        targetCanvas.drawBitmap(bitmap, null, destination, scalePaint)
+        val plane = width * inputHeight
+        target.getPixels(pixels, 0, width, 0, 0, width, inputHeight)
         for (i in pixels.indices) {
             val p = pixels[i]
             data[i] = ((p shr 16) and 0xFF) / 255f
@@ -76,7 +84,7 @@ class PlateOcr(context: Context, threads: Int, requestedWidth: Int, useXnnpack: 
         val tensor = OnnxTensor.createTensor(
             env,
             FloatBuffer.wrap(data),
-            longArrayOf(1, 3, inputHeight.toLong(), inputWidth.toLong())
+            longArrayOf(1, 3, inputHeight.toLong(), width.toLong())
         )
         val result = try {
             session.run(mapOf(inputName to tensor))
@@ -105,7 +113,24 @@ class PlateOcr(context: Context, threads: Int, requestedWidth: Int, useXnnpack: 
         try {
             handle.close()
         } finally {
-            scaledBitmap.recycle()
+            scaledBitmap?.recycle()
+            scaledBitmap = null
+            canvas = null
+            bufferWidth = 0
         }
+    }
+
+    private fun ensureBuffer(width: Int): Bitmap? {
+        if (width == bufferWidth) return scaledBitmap
+        scaledBitmap?.recycle()
+        val bitmap = Bitmap.createBitmap(width, inputHeight, Bitmap.Config.ARGB_8888)
+        val plane = width * inputHeight
+        scaledBitmap = bitmap
+        canvas = Canvas(bitmap)
+        destination.set(0, 0, width, inputHeight)
+        pixels = IntArray(plane)
+        data = FloatArray(plane * 3)
+        bufferWidth = width
+        return bitmap
     }
 }

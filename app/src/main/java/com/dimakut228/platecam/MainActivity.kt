@@ -110,7 +110,7 @@ class MainActivity : AppCompatActivity() {
         tracker = PlateTracker(confirmReads = prefs.confirmReads)
         val targetFps = prefs.analysisFps.coerceAtMost(tuning.maxFps).coerceAtLeast(1)
         val minFps = tuning.minFps.coerceAtMost(targetFps)
-        val startFps = if (tuning.tier == PerformanceTier.LOW) minOf(2, targetFps) else targetFps
+        val startFps = if (tuning.tier == PerformanceTier.LOW) minOf(3, targetFps) else targetFps
         adaptive = AdaptiveRate(minFps = minFps, maxFps = targetFps, startFps = startFps)
         lastAnalysisAt = 0L
         lastTilesAt = 0L
@@ -310,7 +310,7 @@ class MainActivity : AppCompatActivity() {
         var results = activeDetector.detect(bitmap, threshold)
         if (results.isEmpty() && prefs.tiles && tuning.allowTiles &&
             lastFrameCostMs > 0L && lastFrameCostMs <= tuning.tileMaxCostMs &&
-            now - lastTilesAt > 1800L
+            now - lastTilesAt > 1200L
         ) {
             lastTilesAt = now
             results = activeDetector.detectTiled(bitmap, threshold, 4)

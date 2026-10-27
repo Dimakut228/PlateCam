@@ -16,7 +16,7 @@ gradle :app:testDebugUnitTest :app:assembleRelease
 
 ## Модели
 
-- `app/src/main/assets/plate_yolov8n.onnx` — YOLOv8n, вход `[1,3,640,640]`, выход `[1,5,8400]`, 1 класс.
+- `app/src/main/assets/plate_yolov8n.onnx` — YOLOv8n, вход `[1,3,448,448]`, выход `[1,5,4116]`, 1 класс.
 - `app/src/main/assets/ocr_ppocrv5_mobile.onnx` — PP-OCRv5 rec, вход `[1,3,48,W]`, выход `[1,T,438]`.
 - `app/src/main/assets/ppocr_keys.txt` — 436 символов из `ppocrv5_en_dict.txt`. Первые 36 классов совпадают с нужными цифрами/латиницей; остальные классы маскируются в `PlateOcr`.
 - Препроцессинг OCR: RGB, resize 320×48, значения `0..1`, CHW, без mean/std. Проверено на синтетическом номере.
