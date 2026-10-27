@@ -50,12 +50,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var prefs: Prefs
     private var tracker = PlateTracker()
     private var adaptive = AdaptiveRate()
+    private lateinit var tuning: PerformanceProfile
 
     private var lastAnalysisAt = 0L
     private var lastFrameCostMs = 0L
     private var lastTilesAt = 0L
     private var lastDisplay: PlateRead? = null
     private var lastDisplayAt = 0L
+    private var lastOcrAt = 0L
+    private var lastOcrBox: Detection? = null
 
     private val modelReady = AtomicBoolean(false)
     @Volatile private var destroyed = false
@@ -79,8 +82,10 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContentView(R.layout.activity_main)
         prefs = Prefs(this)
+        tuning = DeviceProfile.detect(this)
 
         previewView = findViewById(R.id.preview)
+        previewView.implementationMode = PreviewView.ImplementationMode.PERFORMANCE
         overlay = findViewById(R.id.overlay)
         focusRing = findViewById(R.id.focus_ring)
         statusText = findViewById(R.id.status)
@@ -93,7 +98,7 @@ class MainActivity : AppCompatActivity() {
         }
         setupFocus()
 
-        if (!modelReady.get()) loadModels()
+        if (!modelReady.get()) loadModels(tuning)
         requestCamera()
     }
 
@@ -101,12 +106,15 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         prefs = Prefs(this)
         tracker = PlateTracker(confirmReads = prefs.confirmReads)
-        val targetFps = prefs.analysisFps.coerceIn(3, 8)
-        adaptive = AdaptiveRate(minFps = 3, maxFps = targetFps, startFps = targetFps)
+        val targetFps = prefs.analysisFps.coerceAtMost(tuning.maxFps).coerceAtLeast(1)
+        val minFps = tuning.minFps.coerceAtMost(targetFps)
+        adaptive = AdaptiveRate(minFps = minFps, maxFps = targetFps, startFps = targetFps)
         lastAnalysisAt = 0L
         lastTilesAt = 0L
         lastDisplay = null
         lastDisplayAt = 0L
+        lastOcrAt = 0L
+        lastOcrBox = null
         appliedEv = 0f
         lastExposureAt = 0L
         stableExposureFrames = 0
@@ -114,21 +122,36 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         destroyed = true
+        modelReady.set(false)
         super.onDestroy()
-        if (::analysisExecutor.isInitialized) analysisExecutor.shutdown()
-        detector?.close()
+        val oldDetector = detector
+        val oldOcr = ocr
         detector = null
-        ocr?.close()
         ocr = null
+        if (::analysisExecutor.isInitialized) {
+            analysisExecutor.shutdown()
+            Thread {
+                try {
+                    if (analysisExecutor.awaitTermination(2, TimeUnit.SECONDS)) {
+                        oldDetector?.close()
+                        oldOcr?.close()
+                    }
+                } catch (ignored: InterruptedException) {
+                }
+            }.apply { isDaemon = true }.start()
+        } else {
+            oldDetector?.close()
+            oldOcr?.close()
+        }
     }
 
-    private fun loadModels() {
+    private fun loadModels(profile: PerformanceProfile) {
         analysisExecutor.execute {
             var loadedDetector: PlateDetector? = null
             var loadedOcr: PlateOcr? = null
             try {
-                loadedDetector = PlateDetector(this)
-                loadedOcr = PlateOcr(this)
+                loadedDetector = PlateDetector(this, profile.threads)
+                loadedOcr = PlateOcr(this, profile.threads, profile.ocrWidth)
                 if (destroyed) {
                     loadedDetector.close()
                     loadedOcr.close()
@@ -138,7 +161,7 @@ class MainActivity : AppCompatActivity() {
                 ocr = loadedOcr
                 modelReady.set(true)
                 runOnUiThread {
-                    statusText.text = "PlateCam · ${loadedDetector.inputSize} px · готово"
+                    statusText.text = "PlateCam · ${loadedDetector.inputSize} px · ${profile.tier.label} · готово"
                 }
             } catch (t: Throwable) {
                 loadedDetector?.close()
@@ -171,7 +194,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val analysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .setTargetResolution(Size(1280, 720))
+                    .setTargetResolution(Size(tuning.analysisWidth, tuning.analysisHeight))
                     .build()
                 analysis.setAnalyzer(analysisExecutor) { image -> analyze(image) }
                 provider.unbindAll()
@@ -277,7 +300,9 @@ class MainActivity : AppCompatActivity() {
         val now = System.currentTimeMillis()
         val threshold = prefs.threshold
         var results = activeDetector.detect(bitmap, threshold)
-        if (results.isEmpty() && prefs.tiles && now - lastTilesAt > 1200L) {
+        if (results.isEmpty() && prefs.tiles && tuning.allowTiles &&
+            lastFrameCostMs in 1..tuning.tileMaxCostMs && now - lastTilesAt > 1800L
+        ) {
             lastTilesAt = now
             results = activeDetector.detectTiled(bitmap, threshold, 4)
         }
@@ -286,24 +311,37 @@ class MainActivity : AppCompatActivity() {
         var read: PlateRead? = null
         val tracked: PlateTracker.Tracked?
         if (best != null) {
-            val crop = BitmapUtils.crop(bitmap, best)
-            if (crop != null) {
-                try {
-                    val ocrResult = activeOcr.recognize(crop)
-                    if (ocrResult != null && ocrResult.text.isNotBlank()) {
-                        val hint = PlateHint(
-                            country = prefs.country,
-                            yellow = BitmapUtils.isYellow(crop),
-                            text = ocrResult.text
-                        )
-                        read = PlateParser.parse(ocrResult.text, ocrResult.confidence, hint)
+            val shouldOcr = lastOcrBox == null ||
+                !samePlate(lastOcrBox!!, best) ||
+                now - lastOcrAt >= tuning.ocrIntervalMs
+            if (shouldOcr) {
+                lastOcrAt = now
+                lastOcrBox = best
+                val crop = BitmapUtils.crop(bitmap, best)
+                if (crop != null) {
+                    try {
+                        val ocrResult = activeOcr.recognize(crop)
+                        if (ocrResult != null && ocrResult.text.isNotBlank()) {
+                            val hint = PlateHint(
+                                country = prefs.country,
+                                yellow = BitmapUtils.isYellow(crop),
+                                text = ocrResult.text
+                            )
+                            read = PlateParser.parse(
+                                ocrResult.text,
+                                ocrResult.confidence,
+                                hint,
+                                tuning.parserVariants
+                            )
+                        }
+                    } finally {
+                        crop.recycle()
                     }
-                } finally {
-                    crop.recycle()
                 }
             }
             tracked = tracker.update(best, read)
         } else {
+            lastOcrBox = null
             tracked = tracker.miss()
         }
 
@@ -338,6 +376,12 @@ class MainActivity : AppCompatActivity() {
             }
             statusText.text = "PlateCam · $fps к/с · $cost мс · $count"
         }
+    }
+
+    private fun samePlate(a: Detection, b: Detection): Boolean {
+        if (a.iou(b) >= 0.35f) return true
+        val limit = maxOf(a.width, a.height) * 0.6f
+        return a.distanceTo(b) <= limit
     }
 
     private fun maybeTuneExposure(bitmap: Bitmap) {

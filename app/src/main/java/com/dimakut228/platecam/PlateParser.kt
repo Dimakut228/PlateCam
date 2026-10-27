@@ -164,7 +164,12 @@ object PlateParser {
         ) { m -> "М " + m.groupValues[2] }
     )
 
-    fun parse(raw: String, confidence: Float, hint: PlateHint = PlateHint()): PlateRead? {
+    fun parse(
+        raw: String,
+        confidence: Float,
+        hint: PlateHint = PlateHint(),
+        maxVariants: Int = 700
+    ): PlateRead? {
         val normalized = normalize(raw)
         if (normalized.isEmpty()) return null
         val upperRaw = raw.uppercase()
@@ -175,7 +180,7 @@ object PlateParser {
             else -> Country.UNKNOWN
         }
         val active = if (textCountry == Country.UNKNOWN) patterns else patterns.filter { it.country == textCountry }
-        val variants = variants(normalized)
+        val variants = variants(normalized, maxVariants)
         val candidates = ArrayList<Candidate>(32)
 
         for (variant in variants) {
@@ -271,7 +276,8 @@ object PlateParser {
         return out.toString()
     }
 
-    private fun variants(source: String): List<Variant> {
+    private fun variants(source: String, maxVariants: Int): List<Variant> {
+        val limit = maxVariants.coerceIn(1, 700)
         var current = listOf(Variant("", 0))
         for (ch in source) {
             val alternatives = alternatives(ch)
@@ -286,7 +292,7 @@ object PlateParser {
             current = if (next.isEmpty()) {
                 listOf(Variant(source, 0))
             } else {
-                next.sortedBy { it.edits }.take(700)
+                next.sortedBy { it.edits }.take(limit)
             }
         }
         return current

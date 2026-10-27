@@ -4,6 +4,8 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
@@ -12,44 +14,53 @@ import java.nio.FloatBuffer
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-class PlateDetector(context: Context) {
+class PlateDetector(context: Context, threads: Int) {
 
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
+    private val handle: ModelRuntime.SessionHandle
     private val session: OrtSession
     private val inputName: String
     val inputSize: Int
 
+    private val pixels: IntArray
+    private val data: FloatArray
+    private val canvasBitmap: Bitmap
+    private val canvas: Canvas
+    private val letterboxPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val destination = RectF()
+    private var outputData = FloatArray(0)
+
     init {
-        val bytes = context.assets.open("plate_yolov8n.onnx").use { it.readBytes() }
-        val options = OrtSession.SessionOptions().apply {
-            setIntraOpNumThreads(4)
-            setInterOpNumThreads(1)
-            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-        }
-        session = env.createSession(bytes, options)
+        val modelFile = ModelAssets.prepare(context, "plate_yolov8n.onnx")
+        handle = ModelRuntime.createSession(env, modelFile.absolutePath, threads)
+        session = handle.session
         inputName = session.inputInfo.keys.first()
         val info = session.inputInfo[inputName]?.info as? TensorInfo
         val side = info?.shape?.getOrNull(2)?.toInt() ?: 640
         inputSize = if (side > 0) side else 640
+
+        pixels = IntArray(inputSize * inputSize)
+        data = FloatArray(inputSize * inputSize * 3)
+        canvasBitmap = Bitmap.createBitmap(inputSize, inputSize, Bitmap.Config.ARGB_8888)
+        canvas = Canvas(canvasBitmap)
     }
 
     fun detect(bitmap: Bitmap, threshold: Float, iouThreshold: Float = 0.45f): List<Detection> {
         val box = letterbox(bitmap)
-        val input = box.bitmap
-        val size = inputSize
-        val pixels = IntArray(size * size)
-        input.getPixels(pixels, 0, size, 0, 0, size, size)
-        val plane = size * size
-        val data = FloatArray(plane * 3)
+        canvasBitmap.getPixels(pixels, 0, inputSize, 0, 0, inputSize, inputSize)
+        val plane = inputSize * inputSize
         for (i in pixels.indices) {
             val p = pixels[i]
             data[i] = ((p shr 16) and 0xFF) / 255f
             data[plane + i] = ((p shr 8) and 0xFF) / 255f
             data[plane * 2 + i] = (p and 0xFF) / 255f
         }
-        if (input !== bitmap) input.recycle()
 
-        val tensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(data), longArrayOf(1, 3, size.toLong(), size.toLong()))
+        val tensor = OnnxTensor.createTensor(
+            env,
+            FloatBuffer.wrap(data),
+            longArrayOf(1, 3, inputSize.toLong(), inputSize.toLong())
+        )
         val result = try {
             session.run(mapOf(inputName to tensor))
         } finally {
@@ -59,9 +70,10 @@ class PlateDetector(context: Context) {
             val out = result[0] as OnnxTensor
             val shape = out.info.shape
             val buffer = out.floatBuffer
-            val flat = FloatArray(buffer.remaining())
-            buffer.get(flat)
-            val raw = YoloDecode.decode(flat, shape, threshold, iouThreshold, size)
+            val remaining = buffer.remaining()
+            if (outputData.size < remaining) outputData = FloatArray(remaining)
+            buffer.get(outputData, 0, remaining)
+            val raw = YoloDecode.decode(outputData, shape, threshold, iouThreshold, inputSize)
             return raw.mapNotNull { mapBack(it, box, bitmap.width, bitmap.height) }
                 .filter { d ->
                     val aspect = if (d.height > 0f) d.width / d.height else 0f
@@ -89,11 +101,14 @@ class PlateDetector(context: Context) {
     }
 
     fun close() {
-        session.close()
+        try {
+            handle.close()
+        } finally {
+            canvasBitmap.recycle()
+        }
     }
 
     private data class Letterboxed(
-        val bitmap: Bitmap,
         val scale: Float,
         val offsetX: Float,
         val offsetY: Float
@@ -104,15 +119,12 @@ class PlateDetector(context: Context) {
         val scale = min(target.toFloat() / source.width, target.toFloat() / source.height)
         val width = (source.width * scale).roundToInt().coerceAtLeast(1)
         val height = (source.height * scale).roundToInt().coerceAtLeast(1)
-        val resized = Bitmap.createScaledBitmap(source, width, height, true)
-        val canvasBitmap = Bitmap.createBitmap(target, target, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(canvasBitmap)
-        canvas.drawColor(Color.rgb(114, 114, 114))
         val dx = (target - width) / 2f
         val dy = (target - height) / 2f
-        canvas.drawBitmap(resized, dx, dy, null)
-        if (resized !== source) resized.recycle()
-        return Letterboxed(canvasBitmap, scale, dx, dy)
+        canvas.drawColor(GRAY)
+        destination.set(dx, dy, dx + width, dy + height)
+        canvas.drawBitmap(source, null, destination, letterboxPaint)
+        return Letterboxed(scale, dx, dy)
     }
 
     private fun mapBack(d: Detection, box: Letterboxed, width: Int, height: Int): Detection? {
@@ -123,5 +135,9 @@ class PlateDetector(context: Context) {
         val bottom = ((d.bottom - box.offsetY) / scale).coerceIn(0f, height.toFloat())
         if (right - left < 1f || bottom - top < 1f) return null
         return Detection(left, top, right, bottom, d.classIndex, d.score)
+    }
+
+    private companion object {
+        val GRAY: Int = Color.rgb(114, 114, 114)
     }
 }

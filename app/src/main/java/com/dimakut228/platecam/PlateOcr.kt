@@ -2,15 +2,19 @@ package com.dimakut228.platecam
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Rect
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import ai.onnxruntime.TensorInfo
 import java.nio.FloatBuffer
 
-class PlateOcr(context: Context) {
+class PlateOcr(context: Context, threads: Int, requestedWidth: Int) {
 
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
+    private val handle: ModelRuntime.SessionHandle
     private val session: OrtSession
     private val inputName: String
     private val inputHeight: Int
@@ -18,19 +22,23 @@ class PlateOcr(context: Context) {
     private val keys: List<String>
     private val allowed: BooleanArray
 
+    private val scaledBitmap: Bitmap
+    private val canvas: Canvas
+    private val scalePaint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val destination: Rect
+    private val pixels: IntArray
+    private val data: FloatArray
+    private var outputData = FloatArray(0)
+
     init {
-        val bytes = context.assets.open("ocr_ppocrv5_mobile.onnx").use { it.readBytes() }
-        val options = OrtSession.SessionOptions().apply {
-            setIntraOpNumThreads(4)
-            setInterOpNumThreads(1)
-            setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
-        }
-        session = env.createSession(bytes, options)
+        val modelFile = ModelAssets.prepare(context, "ocr_ppocrv5_mobile.onnx")
+        handle = ModelRuntime.createSession(env, modelFile.absolutePath, threads)
+        session = handle.session
         inputName = session.inputInfo.keys.first()
         val inInfo = session.inputInfo[inputName]?.info as? TensorInfo
         val inShape = inInfo?.shape
         inputHeight = inShape?.getOrNull(2)?.toInt()?.takeIf { it > 0 } ?: 48
-        inputWidth = 320
+        inputWidth = ((requestedWidth.coerceIn(160, 640)) / 8) * 8
 
         val outInfo = session.outputInfo.values.first().info as? TensorInfo
         val classCount = outInfo?.shape?.getOrNull(2)?.toInt()?.takeIf { it > 0 } ?: 438
@@ -45,16 +53,19 @@ class PlateOcr(context: Context) {
                 allowed[i + 1] = true
             }
         }
+
+        scaledBitmap = Bitmap.createBitmap(inputWidth, inputHeight, Bitmap.Config.ARGB_8888)
+        canvas = Canvas(scaledBitmap)
+        destination = Rect(0, 0, inputWidth, inputHeight)
+        val plane = inputWidth * inputHeight
+        pixels = IntArray(plane)
+        data = FloatArray(plane * 3)
     }
 
     fun recognize(bitmap: Bitmap): CtcDecode.Result? {
-        val scaled = Bitmap.createScaledBitmap(bitmap, inputWidth, inputHeight, true)
+        canvas.drawBitmap(bitmap, null, destination, scalePaint)
+        scaledBitmap.getPixels(pixels, 0, inputWidth, 0, 0, inputWidth, inputHeight)
         val plane = inputWidth * inputHeight
-        val pixels = IntArray(plane)
-        scaled.getPixels(pixels, 0, inputWidth, 0, 0, inputWidth, inputHeight)
-        if (scaled !== bitmap) scaled.recycle()
-
-        val data = FloatArray(plane * 3)
         for (i in pixels.indices) {
             val p = pixels[i]
             data[i] = ((p shr 16) and 0xFF) / 255f
@@ -79,9 +90,10 @@ class PlateOcr(context: Context) {
             val timesteps = shape[1].toInt()
             val classes = shape[2].toInt()
             val buffer = out.floatBuffer
-            val flat = FloatArray(buffer.remaining())
-            buffer.get(flat)
-            val decoded = CtcDecode.decode(flat, timesteps, classes, keys, allowed)
+            val remaining = buffer.remaining()
+            if (outputData.size < remaining) outputData = FloatArray(remaining)
+            buffer.get(outputData, 0, remaining)
+            val decoded = CtcDecode.decode(outputData, timesteps, classes, keys, allowed)
             if (decoded.text.isBlank()) return null
             return decoded
         } finally {
@@ -90,6 +102,10 @@ class PlateOcr(context: Context) {
     }
 
     fun close() {
-        session.close()
+        try {
+            handle.close()
+        } finally {
+            scaledBitmap.recycle()
+        }
     }
 }
