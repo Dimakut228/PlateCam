@@ -60,6 +60,7 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var lastDisplayAt = 0L
     @Volatile private var lastOcrAt = 0L
     @Volatile private var lastOcrBox: Detection? = null
+    @Volatile private var lastConfirmed = false
     @Volatile private var rotatedBitmap: Bitmap? = null
 
     private val modelReady = AtomicBoolean(false)
@@ -119,6 +120,7 @@ class MainActivity : AppCompatActivity() {
         lastDisplayAt = 0L
         lastOcrAt = 0L
         lastOcrBox = null
+        lastConfirmed = false
         appliedEv = 0f
         lastExposureAt = 0L
         stableExposureFrames = 0
@@ -322,7 +324,7 @@ class MainActivity : AppCompatActivity() {
         adaptive.boost = best == null
         var read: PlateRead? = null
         val tracked: PlateTracker.Tracked?
-        val wasConfirmed = lastDisplay?.confirmed == true
+        val wasConfirmed = lastConfirmed
         if (best != null) {
             val previousBox = lastOcrBox
             val shouldOcr = previousBox == null ||
@@ -354,9 +356,11 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             tracked = tracker.update(best, read)
+                .also { lastConfirmed = it.confirmed }
         } else {
             lastOcrBox = null
             tracked = tracker.miss()
+            if (tracked == null) lastConfirmed = false
         }
 
         val display = tracked?.read ?: lastDisplay?.takeIf { now - lastDisplayAt <= 2500L }
