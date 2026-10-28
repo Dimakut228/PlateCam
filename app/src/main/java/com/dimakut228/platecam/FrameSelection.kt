@@ -19,8 +19,10 @@ class FrameSelection(
 ) {
 
     private var peak = 0f
+    private var hasPeak = false
     private var lastPeakAt = 0L
     private var lastAcceptedAt = 0L
+    private var hasAccepted = false
 
     /** Число отброшенных размытых кадров (для статуса). */
     @Volatile
@@ -29,25 +31,29 @@ class FrameSelection(
 
     fun reset() {
         peak = 0f
+        hasPeak = false
         lastPeakAt = 0L
         lastAcceptedAt = 0L
+        hasAccepted = false
         rejected = 0
     }
 
     /** true — кадр достаточно резкий, стоит запускать детектор. */
     @Synchronized
     fun accept(sharpness: Float, nowMs: Long): Boolean {
-        peak = if (lastPeakAt == 0L) {
+        peak = if (!hasPeak) {
             sharpness
         } else {
             val decay = exp(-(nowMs - lastPeakAt).coerceAtLeast(0L) / peakTimeConstantMs)
             maxOf(sharpness, (peak * decay).toFloat())
         }
+        hasPeak = true
         lastPeakAt = nowMs
         val threshold = maxOf(minSharpness, peak * acceptRatio)
-        val forced = lastAcceptedAt == 0L || nowMs - lastAcceptedAt >= forceAfterMs
+        val forced = !hasAccepted || nowMs - lastAcceptedAt >= forceAfterMs
         val accepted = forced || sharpness >= threshold
         if (accepted) {
+            hasAccepted = true
             lastAcceptedAt = nowMs
         } else {
             rejected++
