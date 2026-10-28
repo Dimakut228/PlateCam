@@ -8,5 +8,9 @@
     <string name="settings">Настройки</string>
     <string name="camera_permission_needed">Без разрешения на камеру приложение не работает</string>
     <string name="model_missing">Модель не загружена, распознавание выключено</string>
+    <string name="update_available">Доступно обновление</string>
+    <string name="update_message">Сборка %s готова к установке.</string>
+    <string name="update_install">Установить</string>
+    <string name="update_later">Позже</string>
     <string name="about_text">PlateCam распознаёт номера РФ и РБ офлайн, без отправки кадров в сеть.\n\nМодели:\n• Детектор номеров — LicensePlateDetector_YOLOv8n (Murd0ck), CC BY 4.0.\n• OCR — PP-OCRv5 mobile из PaddleOCR, Apache 2.0; ONNX-сборка josephinekmj/anpr-models.\n• Базовая архитектура YOLOv8 — AGPL-3.0.\n\nОграничения: качество зависит от освещения, ракурса, загрязнения и скорости. Специальные и нестандартные номера могут распознаваться как «нестандартный». Приложение не заменяет официальные средства фиксации.</string>
 </resources>
