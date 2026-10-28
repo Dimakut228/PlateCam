@@ -6,9 +6,12 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
 import android.os.Bundle
+import android.util.Range
 import android.util.Size
 import android.view.MotionEvent
 import android.view.View
@@ -51,6 +54,7 @@ class MainActivity : AppCompatActivity() {
     @Volatile private lateinit var prefs: Prefs
     @Volatile private var tracker = PlateTracker()
     @Volatile private var adaptive = AdaptiveRate()
+    @Volatile private var frameSelection = FrameSelection()
     @Volatile private lateinit var tuning: PerformanceProfile
 
     @Volatile private var lastAnalysisAt = 0L
@@ -115,6 +119,7 @@ class MainActivity : AppCompatActivity() {
         val startFps = if (tuning.tier == PerformanceTier.LOW) minOf(3, targetFps) else targetFps
         adaptive = AdaptiveRate(minFps = minFps, maxFps = targetFps, startFps = startFps)
         adaptive.boost = false
+        frameSelection = FrameSelection()
         lastAnalysisAt = 0L
         lastTilesAt = 0L
         lastDisplay = null
@@ -285,9 +290,41 @@ class MainActivity : AppCompatActivity() {
                     CaptureRequest.CONTROL_AE_MODE,
                     CameraMetadata.CONTROL_AE_MODE_ON
                 )
-                .build()
-            camera2.setCaptureRequestOptions(options)
+                // В машине фокус «охотится» из-за тряски и вибраций —
+                // держим непрерывную подстройку фокуса.
+                .setCaptureRequestOption(
+                    CaptureRequest.CONTROL_AF_MODE,
+                    CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+                )
+            // Фиксированная максимальная частота кадров вынуждает AE держать
+            // короткую выдержку — движение и тряска меньше размывают номер.
+            val fpsRange = pickFastFpsRange()
+            if (fpsRange != null) {
+                options.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fpsRange)
+            }
+            camera2.setCaptureRequestOptions(options.build())
         } catch (t: Throwable) {
+        }
+    }
+
+    /** Подбирает самый высокий фиксированный диапазон частот кадров задней камеры. */
+    private fun pickFastFpsRange(): Range<Int>? {
+        return try {
+            val manager = getSystemService(CAMERA_SERVICE) as? CameraManager ?: return null
+            val backId = manager.cameraIdList.firstOrNull { id ->
+                manager.getCameraCharacteristics(id)
+                    .get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_BACK
+            } ?: return null
+            val ranges = manager.getCameraCharacteristics(backId)
+                .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                ?.toList()
+                .orEmpty()
+            // Фиксированный min==max не даёт AE растягивать выдержку.
+            ranges.firstOrNull { it.lower == it.upper && it.upper >= 30 }
+                ?: ranges.filter { it.lower == it.upper }.maxByOrNull { it.upper }
+                ?: ranges.maxByOrNull { it.upper }
+        } catch (t: Throwable) {
+            null
         }
     }
 
@@ -304,7 +341,11 @@ class MainActivity : AppCompatActivity() {
             val rotation = image.imageInfo.rotationDegrees
             val upright = if (rotation % 360 == 0) bitmap else rotateForAnalysis(bitmap, rotation)
             try {
-                processFrame(upright)
+                // Тряска и движение размывают кадры: детектор на них почти не
+                // читает номер, пропускаем их в пользу самых резких.
+                if (frameSelection.accept(Sharpness.of(upright), now)) {
+                    processFrame(upright)
+                }
             } finally {
                 bitmap.recycle()
             }
@@ -323,7 +364,13 @@ class MainActivity : AppCompatActivity() {
         val activeDetector = detector ?: return
         val activeOcr = ocr ?: return
         val now = System.currentTimeMillis()
-        val threshold = prefs.threshold
+        // В режиме поиска (движение, тряска) номер в кадре хуже и мельче —
+        // чуть снижаем порог, чтобы не упускать слабые детекции.
+        val threshold = if (adaptive.boost) {
+            (prefs.threshold - SEARCH_THRESHOLD_DROP).coerceAtLeast(SEARCH_THRESHOLD_MIN)
+        } else {
+            prefs.threshold
+        }
         var results = activeDetector.detect(bitmap, threshold)
         if (results.isEmpty() && prefs.tiles && tuning.allowTiles &&
             lastFrameCostMs > 0L && lastFrameCostMs <= tuning.tileMaxCostMs &&
@@ -350,20 +397,7 @@ class MainActivity : AppCompatActivity() {
                 val crop = BitmapUtils.crop(bitmap, best)
                 if (crop != null) {
                     try {
-                        val ocrResult = activeOcr.recognize(crop)
-                        if (ocrResult != null && ocrResult.text.isNotBlank()) {
-                            val hint = PlateHint(
-                                country = prefs.country,
-                                yellow = BitmapUtils.isYellow(crop),
-                                text = ocrResult.text
-                            )
-                            read = PlateParser.parse(
-                                ocrResult.text,
-                                ocrResult.confidence,
-                                hint,
-                                tuning.parserVariants
-                            )
-                        }
+                        read = readPlate(activeOcr, crop)
                     } finally {
                         crop.recycle()
                     }
@@ -373,7 +407,22 @@ class MainActivity : AppCompatActivity() {
                 .also { lastConfirmed = it.confirmed }
         } else {
             lastOcrBox = null
-            tracked = tracker.miss()
+            // Детектор «теряет» номер на кадрах из-за тряски, но трек жив:
+            // читаем предсказанную область, накапливая голоса подтверждения.
+            var predictedRead: PlateRead? = null
+            val predicted = tracker.predict(now)
+            if (predicted != null && now - lastOcrAt >= PREDICTED_OCR_INTERVAL_MS) {
+                lastOcrAt = now
+                val crop = BitmapUtils.crop(bitmap, predicted, PREDICTED_CROP_MARGIN)
+                if (crop != null) {
+                    try {
+                        predictedRead = readPlate(activeOcr, crop)
+                    } finally {
+                        crop.recycle()
+                    }
+                }
+            }
+            tracked = tracker.miss(predictedRead)
             if (tracked == null) lastConfirmed = false
         }
 
@@ -406,8 +455,27 @@ class MainActivity : AppCompatActivity() {
                 plateText.text = getString(R.string.searching_plate)
                 plateInfo.text = getString(R.string.search_hint)
             }
-            statusText.text = "PlateCam · $fps к/с · $cost мс · $count" + if (adaptive.boost) " · поиск" else ""
+            statusText.text = "PlateCam · $fps к/с · $cost мс · $count" +
+                (if (adaptive.boost) " · поиск" else "") +
+                (if (frameSelection.rejected > 0) " · размытых: ${frameSelection.rejected}" else "")
         }
+    }
+
+    /** OCR + разбор номера по кадропу; null, если прочитать не удалось. */
+    private fun readPlate(ocr: PlateOcr, crop: Bitmap): PlateRead? {
+        val ocrResult = ocr.recognize(crop) ?: return null
+        if (ocrResult.text.isBlank()) return null
+        val hint = PlateHint(
+            country = prefs.country,
+            yellow = BitmapUtils.isYellow(crop),
+            text = ocrResult.text
+        )
+        return PlateParser.parse(
+            ocrResult.text,
+            ocrResult.confidence,
+            hint,
+            tuning.parserVariants
+        )
     }
 
     private fun rotateForAnalysis(source: Bitmap, degrees: Int): Bitmap {
@@ -542,5 +610,15 @@ class MainActivity : AppCompatActivity() {
             control.setExposureCompensationIndex(index)
         } catch (t: Throwable) {
         }
+    }
+
+    private companion object {
+        /** Понижение порога детектора в режиме поиска номера. */
+        const val SEARCH_THRESHOLD_DROP = 0.1f
+        const val SEARCH_THRESHOLD_MIN = 0.15f
+        /** Повторное чтение предсказанной области не чаще, чем раз в 100 мс. */
+        const val PREDICTED_OCR_INTERVAL_MS = 100L
+        /** Запас вокруг предсказанного бокса: тряска смещает номер сильнее. */
+        const val PREDICTED_CROP_MARGIN = 0.2f
     }
 }

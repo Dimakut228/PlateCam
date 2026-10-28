@@ -60,4 +60,56 @@ class PlateTrackerTest {
         val result = tracker.miss()
         assertEquals(null, result)
     }
+
+    @Test
+    fun predictIsNullWithoutTrack() {
+        val tracker = PlateTracker()
+        assertEquals(null, tracker.predict())
+    }
+
+    @Test
+    fun predictFollowsMotion() {
+        var time = 0L
+        val tracker = PlateTracker(clock = { time })
+        tracker.update(Detection(10f, 10f, 150f, 50f, 0, 0.9f), null)
+        time = 100
+        // Номер сместился на 40 px за 100 мс.
+        tracker.update(Detection(50f, 10f, 190f, 50f, 0, 0.9f), null)
+        time = 150
+        val predicted = tracker.predict(time)
+        // Скорость после сглаживания 200 px/с → за 50 мс бокс смещается на 10 px.
+        assertEquals(60f, predicted!!.left, 1.5f)
+    }
+
+    @Test
+    fun predictIsNullForStaleTrack() {
+        var time = 0L
+        val tracker = PlateTracker(clock = { time })
+        tracker.update(detection(), null)
+        time = 1000
+        assertEquals(null, tracker.predict(time))
+    }
+
+    @Test
+    fun missReadAddsVote() {
+        val tracker = PlateTracker(confirmReads = 2)
+        tracker.update(detection(), read("A123BC77", confidence = 0.7f))
+        // Тряска оборвала детекцию, но чтение по предсказанной области
+        // продолжает накапливать голоса.
+        val result = tracker.miss(read("A123BC77", confidence = 0.7f))
+        assertEquals(2, result!!.votes)
+        assertTrue(result.confirmed)
+    }
+
+    @Test
+    fun associatesDetectionAfterShakeJump() {
+        var time = 0L
+        val tracker = PlateTracker(clock = { time })
+        tracker.update(Detection(10f, 10f, 150f, 50f, 0, 0.9f), read("A123BC77", confidence = 0.7f))
+        time = 120
+        // Прыжок согласуется со скоростью движения — тот же трек,
+        // подтверждение не сбрасывается.
+        val result = tracker.update(Detection(58f, 10f, 198f, 50f, 0, 0.9f), read("A123BC77", confidence = 0.7f))
+        assertEquals(2, result.votes)
+    }
 }

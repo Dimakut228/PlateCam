@@ -5,7 +5,9 @@ class PlateTracker(
     private val fastConfirmConfidence: Float = 0.9f,
     private val iouThreshold: Float = 0.2f,
     private val maxMissed: Int = 6,
-    private val keepDisplayMs: Long = 2500L
+    private val keepDisplayMs: Long = 2500L,
+    private val predictMaxAgeMs: Long = 600L,
+    private val clock: () -> Long = System::currentTimeMillis
 ) {
 
     data class Tracked(
@@ -18,8 +20,10 @@ class PlateTracker(
     private class Track(
         var detection: Detection,
         var missed: Int = 0,
-        var lastSeen: Long = System.currentTimeMillis(),
-        val reads: ArrayDeque<PlateRead> = ArrayDeque()
+        var lastSeen: Long = 0L,
+        val reads: ArrayDeque<PlateRead> = ArrayDeque(),
+        var vx: Float = 0f,
+        var vy: Float = 0f
     )
 
     private var track: Track? = null
@@ -27,12 +31,19 @@ class PlateTracker(
     private var lastDisplayAt = 0L
 
     fun update(detection: Detection, read: PlateRead?): Tracked {
-        val now = System.currentTimeMillis()
+        val now = clock()
         var current = track
-        if (current == null || !samePlate(current.detection, detection)) {
+        if (current == null || !samePlate(current, detection, now)) {
             current = Track(detection, lastSeen = now)
             track = current
         } else {
+            // Скорость центра номера: в машине от неё зависит предсказание
+            // позиции на следующем кадре, когда детектор номер «теряет».
+            val dtSeconds = (now - current.lastSeen).coerceAtLeast(1L) / 1000f
+            val instVx = (detection.centerX - current.detection.centerX) / dtSeconds
+            val instVy = (detection.centerY - current.detection.centerY) / dtSeconds
+            current.vx = current.vx * SMOOTHING + instVx * (1f - SMOOTHING)
+            current.vy = current.vy * SMOOTHING + instVy * (1f - SMOOTHING)
             current.detection = detection
             current.missed = 0
             current.lastSeen = now
@@ -55,13 +66,25 @@ class PlateTracker(
         return result
     }
 
-    fun miss(): Tracked? {
-        val now = System.currentTimeMillis()
+    /**
+     * Кадр без детекции. [read] — чтение по предсказанной области (тряска
+     * рвёт детекцию, но номер остаётся в кадре): голос учитывается,
+     * пока трек жив.
+     */
+    fun miss(read: PlateRead? = null): Tracked? {
+        val now = clock()
         val current = track
         if (current == null) {
             return lastDisplay?.takeIf { now - lastDisplayAt <= keepDisplayMs }
         }
         current.missed++
+        // Промахи затухают скорость: без новых измерений предсказание плывёт.
+        current.vx *= VELOCITY_DECAY
+        current.vy *= VELOCITY_DECAY
+        if (read != null) {
+            current.reads.addLast(read)
+            while (current.reads.size > 8) current.reads.removeFirst()
+        }
         if (current.missed > maxMissed) {
             track = null
             return lastDisplay?.takeIf { now - lastDisplayAt <= keepDisplayMs }
@@ -71,16 +94,45 @@ class PlateTracker(
         return Tracked(current.detection, consensus?.first, votes >= confirmReads, votes)
     }
 
+    /**
+     * Предсказанное положение номера с учётом его движения; null, если
+     * трек протух и предсказание уже ни на что не опирается.
+     */
+    fun predict(now: Long = clock()): Detection? {
+        val current = track ?: return null
+        if (now - current.lastSeen > predictMaxAgeMs) return null
+        return predictedDetection(current, now)
+    }
+
     fun reset() {
         track = null
         lastDisplay = null
         lastDisplayAt = 0L
     }
 
-    private fun samePlate(a: Detection, b: Detection): Boolean {
-        if (a.iou(b) >= iouThreshold) return true
-        val limit = maxOf(a.width, a.height) * 0.8f
-        return a.distanceTo(b) <= limit
+    private fun samePlate(track: Track, detection: Detection, now: Long): Boolean {
+        // Связываем не с прошлым боксом, а с ожидаемым: тряска и пропуск
+        // размытых кадров срывают совпадение боксов между кадрами.
+        val expected = predictedDetection(track, now)
+        if (expected.iou(detection) >= iouThreshold) return true
+        val limit = maxOf(expected.width, expected.height) * 0.8f
+        return expected.distanceTo(detection) <= limit
+    }
+
+    private fun predictedDetection(track: Track, now: Long): Detection {
+        val elapsedSeconds = (now - track.lastSeen).coerceAtLeast(0L) / 1000f
+        return shift(track.detection, track.vx * elapsedSeconds, track.vy * elapsedSeconds)
+    }
+
+    private fun shift(d: Detection, dx: Float, dy: Float): Detection {
+        // Сдвиг ограничиваем долями размера номера: разогнавшаяся тряска
+        // не должна уводить область за пределы реального номера.
+        val capX = d.width * MAX_SHIFT_FACTOR
+        val capY = d.height * MAX_SHIFT_FACTOR
+        val sx = dx.coerceIn(-capX, capX)
+        val sy = dy.coerceIn(-capY, capY)
+        if (sx == 0f && sy == 0f) return d
+        return Detection(d.left + sx, d.top + sy, d.right + sx, d.bottom + sy, d.classIndex, d.score)
     }
 
     private fun consensus(reads: ArrayDeque<PlateRead>): Pair<PlateRead, Int>? {
@@ -128,5 +180,11 @@ class PlateTracker(
             current = swap
         }
         return previous[b.length]
+    }
+
+    private companion object {
+        const val SMOOTHING = 0.5f
+        const val VELOCITY_DECAY = 0.7f
+        const val MAX_SHIFT_FACTOR = 1.5f
     }
 }
