@@ -112,6 +112,7 @@ class MainActivity : AppCompatActivity() {
         val minFps = tuning.minFps.coerceAtMost(targetFps)
         val startFps = if (tuning.tier == PerformanceTier.LOW) minOf(3, targetFps) else targetFps
         adaptive = AdaptiveRate(minFps = minFps, maxFps = targetFps, startFps = startFps)
+        adaptive.boost = false
         lastAnalysisAt = 0L
         lastTilesAt = 0L
         lastDisplay = null
@@ -317,13 +318,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         val best = results.maxByOrNull { it.score }
+        // Пока номер не найден — обрабатываем кадры подряд (AdaptiveRate.boost).
+        adaptive.boost = best == null
         var read: PlateRead? = null
         val tracked: PlateTracker.Tracked?
+        val wasConfirmed = lastDisplay?.confirmed == true
         if (best != null) {
             val previousBox = lastOcrBox
             val shouldOcr = previousBox == null ||
                 !samePlate(previousBox, best) ||
-                now - lastOcrAt >= tuning.ocrIntervalMs
+                now - lastOcrAt >= if (wasConfirmed) tuning.ocrIntervalMs else 120L
             if (shouldOcr) {
                 lastOcrAt = now
                 lastOcrBox = best
@@ -384,7 +388,7 @@ class MainActivity : AppCompatActivity() {
                 plateText.text = getString(R.string.searching_plate)
                 plateInfo.text = getString(R.string.search_hint)
             }
-            statusText.text = "PlateCam · $fps к/с · $cost мс · $count"
+            statusText.text = "PlateCam · $fps к/с · $cost мс · $count" + if (adaptive.boost) " · поиск" else ""
         }
     }
 

@@ -2,6 +2,7 @@ package com.dimakut228.platecam
 
 class PlateTracker(
     private val confirmReads: Int = 2,
+    private val fastConfirmConfidence: Float = 0.9f,
     private val iouThreshold: Float = 0.2f,
     private val maxMissed: Int = 6,
     private val keepDisplayMs: Long = 2500L
@@ -41,7 +42,13 @@ class PlateTracker(
             while (current.reads.size > 8) current.reads.removeFirst()
         }
         val consensus = consensus(current.reads)
-        val votes = consensus?.second ?: 0
+        var votes = consensus?.second ?: 0
+        // Очень уверенное чтение не ждёт второго кадра.
+        if (votes < confirmReads && confirmReads > 1 &&
+            current.reads.any { it.confidence >= fastConfirmConfidence }
+        ) {
+            votes = confirmReads
+        }
         val result = Tracked(detection, consensus?.first, votes >= confirmReads, votes)
         lastDisplay = result
         lastDisplayAt = now
