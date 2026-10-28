@@ -16,7 +16,6 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.camera2.interop.Camera2CameraControl
 import androidx.camera.camera2.interop.CaptureRequestOptions
@@ -197,35 +196,15 @@ class MainActivity : AppCompatActivity() {
 
     @Volatile private var updateChecked = false
 
-    /** Проверка обновления: фоновый поток, один раз за сессию. */
+    /** Проверка обновления при старте — не чаще раза в сутки. */
     private fun checkForUpdates() {
         if (updateChecked) return
         updateChecked = true
-        Thread {
-            val current = BuildConfig.VERSION_CODE.toLong()
-            // Если APK уже скачан ранее — предлагаем установить сразу.
-            UpdateChecker.downloadedUpdate(this, current)?.let { apk ->
-                promptInstall(apk)
-                return@Thread
-            }
-            val release = UpdateChecker.fetchLatest() ?: return@Thread
-            if (!UpdateChecker.isNewer(release.build, current)) return@Thread
-            val apk = UpdateChecker.download(this, release) ?: return@Thread
-            promptInstall(apk)
-        }.apply { isDaemon = true }.start()
-    }
-
-    private fun promptInstall(apk: java.io.File) {
-        val intent = UpdateChecker.installIntent(this, apk) ?: return
-        runOnUiThread {
-            if (destroyed || isFinishing) return@runOnUiThread
-            AlertDialog.Builder(this)
-                .setTitle(getString(R.string.update_available))
-                .setMessage(getString(R.string.update_message, apk.nameWithoutExtension.removePrefix("PlateCam-")))
-                .setPositiveButton(getString(R.string.update_install)) { _, _ -> startActivity(intent) }
-                .setNegativeButton(getString(R.string.update_later), null)
-                .show()
-        }
+        val now = System.currentTimeMillis()
+        val lastCheck = prefs.lastUpdateCheckAt
+        if (lastCheck > 0L && now - lastCheck < 24 * 60 * 60 * 1000L) return
+        prefs.lastUpdateCheckAt = now
+        UpdateFlow.check(this)
     }
 
     private fun startCamera() {

@@ -52,6 +52,11 @@
         android:title="XNNPACK" />
 
     <Preference
+        android:key="check_updates"
+        android:summary="Проверяет GitHub Releases; при наличии новой сборки предлагает установку"
+        android:title="Проверить обновления" />
+
+    <Preference
         android:key="about"
         android:summary="Модели, лицензии и ограничения"
         android:title="О программе" />
